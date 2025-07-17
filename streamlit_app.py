@@ -9,8 +9,16 @@ import streamlit as st
 import xgboost as xgb
 from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
-from sklearn.metrics import auc, classification_report, confusion_matrix, roc_curve
+from sklearn.metrics import (
+    accuracy_score,
+    auc,
+    classification_report,
+    confusion_matrix,
+    roc_curve,
+)
+from sklearn.model_selection import GridSearchCV, RandomizedSearchCV, cross_val_score
 from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import LabelEncoder, OneHotEncoder
 
 # Set page config for better layout
 st.set_page_config(layout="wide", page_title="Data Science Project Demo")
@@ -38,7 +46,6 @@ def load_data(train_path, test_path):
 
 
 # Data Preprocessing
-@st.cache_resource  # Cache the preprocessor pipeline
 def create_preprocessor(train_df):
     """
     Creates and fits a preprocessing pipeline based on the training data.
@@ -63,6 +70,7 @@ def create_preprocessor(train_df):
     categorical_transformer = Pipeline(
         steps=[
             ("imputer", SimpleImputer(strategy="most_frequent")),
+            ("onehot", OneHotEncoder(handle_unknown="ignore")),
         ]
     )
 
@@ -77,7 +85,6 @@ def create_preprocessor(train_df):
     return preprocessor, numerical_cols, categorical_cols
 
 
-@st.cache_data  # Cache the preprocessed data
 def preprocess_data(df, preprocessor, fit_preprocessor=False):
     """Applies the preprocessing pipeline to the dataframe."""
     if fit_preprocessor:
@@ -90,17 +97,84 @@ def preprocess_data(df, preprocessor, fit_preprocessor=False):
 
 
 # Model Training
-@st.cache_resource  # Cache the trained model
-def train_model(X_train_processed, y_train):
-    """Trains an XGBoost Classifier model."""
-    model = xgb.XGBClassifier(
-        objective="binary:logistic",
-        eval_metric="accuracy",
-        n_estimators=100,
-        random_state=42,
-    )
+def train_model(X_train_processed, y_train, **kwargs):
+    """Trains an XGBoost Classifier model with optional hyperparameters."""
+    default_params = {
+        "objective": "binary:logistic",
+        "eval_metric": accuracy_score,
+        "n_estimators": 100,
+        "random_state": 42,
+    }
+    # Update default params with any provided kwargs
+    default_params.update(kwargs)
+
+    model = xgb.XGBClassifier(**default_params)
     model.fit(X_train_processed, y_train)
     return model
+
+
+# Hyperparameter Tuning Functions
+def perform_hyperparameter_tuning(
+    X_train_processed, y_train, param_grid, search_type="grid", cv_folds=5, n_iter=10
+):
+    """
+    Performs hyperparameter tuning using GridSearchCV or RandomizedSearchCV.
+
+    Args:
+        X_train_processed: Preprocessed training features
+        y_train: Training target
+        param_grid: Dictionary of hyperparameters to tune
+        search_type: "grid" for GridSearchCV, "random" for RandomizedSearchCV
+        cv_folds: Number of cross-validation folds
+        n_iter: Number of iterations for RandomizedSearchCV
+
+    Returns:
+        best_model: The best model found
+        search_results: The search object with all results
+    """
+    base_model = xgb.XGBClassifier(
+        objective="binary:logistic",
+        eval_metric="accuracy",
+        random_state=42,
+        enable_categorical=True,  # Enable categorical support in XGBoost
+    )
+
+    if search_type == "grid":
+        search = GridSearchCV(
+            base_model,
+            param_grid,
+            cv=cv_folds,
+            scoring="accuracy",
+            n_jobs=-1,
+            verbose=1,
+        )
+    else:  # random search
+        search = RandomizedSearchCV(
+            base_model,
+            param_grid,
+            n_iter=n_iter,
+            cv=cv_folds,
+            scoring="accuracy",
+            n_jobs=-1,
+            random_state=42,
+            verbose=1,
+        )
+
+    search.fit(X_train_processed, y_train)
+    return search.best_estimator_, search
+
+
+def get_hyperparameter_grid():
+    """Returns a comprehensive hyperparameter grid for XGBoost."""
+    return {
+        "n_estimators": [50, 100, 200, 300],
+        "max_depth": [3, 4, 5, 6, 7],
+        "learning_rate": [0.01, 0.1, 0.2, 0.3],
+        "subsample": [0.8, 0.9, 1.0],
+        "colsample_bytree": [0.8, 0.9, 1.0],
+        "reg_alpha": [0, 0.1, 0.5, 1.0],
+        "reg_lambda": [0, 0.1, 0.5, 1.0],
+    }
 
 
 # Streamlit UI
@@ -118,11 +192,12 @@ def main():
             "Project Introduction",
             "Data Overview",
             "Model Performance & Insights",
+            "Hyperparameter Tuning",
             "Batch Prediction",
         ],
     )
 
-    train_df, test_df = load_data("train.csv", "test.csv")
+    train_df, test_df = load_data("data/train.csv", "data/test.csv")
 
     # Ensure the target column exists in the training data
     if TARGET_COLUMN not in train_df.columns:
@@ -134,6 +209,13 @@ def main():
     # Separate features and target for training
     X_train = train_df.drop(columns=[TARGET_COLUMN])
     y_train = train_df[TARGET_COLUMN]
+
+    # Encode string labels to numeric for XGBoost binary classification
+    label_encoder = LabelEncoder()
+    y_train_encoded = label_encoder.fit_transform(y_train)
+
+    # Store label encoder in session state for batch predictions
+    st.session_state.label_encoder = label_encoder
 
     # Create and fit the preprocessor
     preprocessor, numerical_cols, categorical_cols = create_preprocessor(X_train)
@@ -156,7 +238,7 @@ def main():
         )  # Simple fallback, might not be accurate for OHE
 
     # Train the model
-    model = train_model(X_train_processed, y_train)
+    model = train_model(X_train_processed, y_train_encoded)
 
     if page == "Project Introduction":
         st.header("🌟 Welcome!")
@@ -232,7 +314,7 @@ def main():
             "The Receiver Operating Characteristic (ROC) curve illustrates the diagnostic ability of a binary classifier system as its discrimination threshold is varied."
         )
 
-        fpr, tpr, thresholds = roc_curve(y_train, y_pred_proba)
+        fpr, tpr, thresholds = roc_curve(y_train_encoded, y_pred_proba)
         roc_auc = auc(fpr, tpr)
 
         fig_roc, ax_roc = plt.subplots(figsize=(8, 6))
@@ -253,12 +335,12 @@ def main():
         st.pyplot(fig_roc)
 
         st.subheader("Classification Report")
-        st.text(classification_report(y_train, y_pred))
+        st.text(classification_report(y_train_encoded, y_pred))
 
         st.subheader("Confusion Matrix")
         fig_cm, ax_cm = plt.subplots(figsize=(6, 5))
         sns.heatmap(
-            confusion_matrix(y_train, y_pred),
+            confusion_matrix(y_train_encoded, y_pred),
             annot=True,
             fmt="d",
             cmap="Blues",
@@ -292,7 +374,6 @@ def main():
             ]
 
         # SHAP Summary Plot
-        st.set_option("deprecation.showPyplotGlobalUse", False)  # Suppress warning
         fig_shap, ax_shap = plt.subplots(figsize=(10, 7))
         shap.summary_plot(
             shap_values,
@@ -311,6 +392,314 @@ def main():
             - Dots stacked vertically indicate density.
             - A dot to the right of zero means that feature value increases the prediction, and to the left decreases it.
         """)
+
+    elif page == "Hyperparameter Tuning":
+        st.header("🔧 Hyperparameter Tuning")
+        st.markdown("""
+            This section allows you to experiment with different hyperparameters for the XGBoost model.
+            Enter comma-separated values for each parameter you want to tune.
+        """)
+
+        # Create two columns for layout
+        col1, col2 = st.columns([1, 1])
+
+        with col1:
+            st.subheader("Hyperparameter Selection")
+
+            # Search type selection
+            search_type = st.selectbox(
+                "Search Type",
+                ["grid", "random"],
+                help="Grid Search: Exhaustive search over all parameter combinations. Random Search: Random sampling of parameter combinations.",
+            )
+
+            # Cross-validation folds
+            cv_folds = st.slider(
+                "Cross-Validation Folds", min_value=3, max_value=10, value=5
+            )
+
+            if search_type == "random":
+                n_iter = st.slider(
+                    "Number of Iterations", min_value=10, max_value=100, value=20
+                )
+
+            st.subheader("Parameter Ranges")
+            st.markdown(
+                "*Enter comma-separated values for each parameter you want to tune. Leave empty to use default value.*"
+            )
+
+            # Helper function to parse comma-separated values
+            def parse_values(input_str, value_type=float):
+                if not input_str.strip():
+                    return []
+                try:
+                    if isinstance(value_type, int):
+                        return [int(x.strip()) for x in input_str.split(",")]
+                    else:
+                        return [float(x.strip()) for x in input_str.split(",")]
+                except ValueError:
+                    st.error(
+                        f"Invalid input format. Please enter comma-separated {value_type.__name__} values."
+                    )
+                    return []
+
+            # n_estimators
+            n_estimators_input = st.text_input(
+                "Number of Estimators",
+                placeholder="e.g., 100, 200, 300",
+                help="Number of boosting rounds. Higher values may improve performance but increase training time.",
+            )
+
+            # max_depth
+            max_depth_input = st.text_input(
+                "Max Depth",
+                placeholder="e.g., 3, 4, 5, 6",
+                help="Maximum depth of trees. Controls model complexity.",
+            )
+
+            # learning_rate
+            learning_rate_input = st.text_input(
+                "Learning Rate",
+                placeholder="e.g., 0.01, 0.1, 0.2",
+                help="Step size shrinkage to prevent overfitting.",
+            )
+
+            # subsample
+            subsample_input = st.text_input(
+                "Subsample",
+                placeholder="e.g., 0.8, 0.9, 1.0",
+                help="Fraction of samples used for training each tree.",
+            )
+
+            # colsample_bytree
+            colsample_input = st.text_input(
+                "Column Sample by Tree",
+                placeholder="e.g., 0.8, 0.9, 1.0",
+                help="Fraction of features used for training each tree.",
+            )
+
+            # Regularization parameters
+            reg_alpha_input = st.text_input(
+                "L1 Regularization (reg_alpha)",
+                placeholder="e.g., 0, 0.1, 0.5",
+                help="L1 regularization term on weights.",
+            )
+
+            reg_lambda_input = st.text_input(
+                "L2 Regularization (reg_lambda)",
+                placeholder="e.g., 0, 0.1, 0.5",
+                help="L2 regularization term on weights.",
+            )
+
+        with col2:
+            st.subheader("Tuning Results")
+
+            # Build parameter grid
+            param_grid = {}
+
+            # Parse input values
+            if n_estimators_input:
+                n_estimators_values = parse_values(n_estimators_input, int)
+                if n_estimators_values:
+                    param_grid["n_estimators"] = n_estimators_values
+
+            if max_depth_input:
+                max_depth_values = parse_values(max_depth_input, int)
+                if max_depth_values:
+                    param_grid["max_depth"] = max_depth_values
+
+            if learning_rate_input:
+                learning_rate_values = parse_values(learning_rate_input, float)
+                if learning_rate_values:
+                    param_grid["learning_rate"] = learning_rate_values
+
+            if subsample_input:
+                subsample_values = parse_values(subsample_input, float)
+                if subsample_values:
+                    param_grid["subsample"] = subsample_values
+
+            if colsample_input:
+                colsample_values = parse_values(colsample_input, float)
+                if colsample_values:
+                    param_grid["colsample_bytree"] = colsample_values
+
+            if reg_alpha_input:
+                reg_alpha_values = parse_values(reg_alpha_input, float)
+                if reg_alpha_values:
+                    param_grid["reg_alpha"] = reg_alpha_values
+
+            if reg_lambda_input:
+                reg_lambda_values = parse_values(reg_lambda_input, float)
+                if reg_lambda_values:
+                    param_grid["reg_lambda"] = reg_lambda_values
+
+            # Show current parameter grid
+            if param_grid:
+                st.subheader("Current Parameter Grid:")
+                st.json(param_grid)
+
+                # Calculate total combinations for grid search
+                if search_type == "grid":
+                    total_combinations = 1
+                    for values in param_grid.values():
+                        total_combinations *= len(values)
+                    st.info(f"Total combinations to test: {total_combinations}")
+
+                    if total_combinations > 100:
+                        st.warning(
+                            "⚠️ Large number of combinations detected. Consider using Random Search or reducing parameter ranges."
+                        )
+
+            # Start tuning button
+            if st.button("🚀 Start Hyperparameter Tuning", type="primary"):
+                if not param_grid:
+                    st.error("Please enter at least one hyperparameter range!")
+                else:
+                    with st.spinner(
+                        "Performing hyperparameter tuning... This may take a while."
+                    ):
+                        try:
+                            # Perform hyperparameter tuning
+                            kwargs = (
+                                {"n_iter": n_iter} if search_type == "random" else {}
+                            )
+                            best_model, search_results = perform_hyperparameter_tuning(
+                                X_train_processed,
+                                y_train_encoded,
+                                param_grid,
+                                search_type=search_type,
+                                cv_folds=cv_folds,
+                                **kwargs,
+                            )
+
+                            # Store results in session state
+                            st.session_state.tuning_results = {
+                                "best_model": best_model,
+                                "search_results": search_results,
+                                "best_params": search_results.best_params_,
+                                "best_score": search_results.best_score_,
+                            }
+
+                            st.success("Hyperparameter tuning completed!")
+
+                        except Exception as e:
+                            st.error(f"Error during hyperparameter tuning: {str(e)}")
+
+            # Display results if available
+            if hasattr(st.session_state, "tuning_results"):
+                results = st.session_state.tuning_results
+
+                st.subheader("🏆 Best Parameters Found:")
+                st.json(results["best_params"])
+
+                st.subheader("📊 Best Cross-Validation Score:")
+                st.metric("Accuracy", f"{results['best_score']:.4f}")
+
+                # Compare with baseline model
+                st.subheader("📈 Model Comparison")
+
+                # Train baseline model
+                baseline_model = train_model(X_train_processed, y_train_encoded)
+                baseline_scores = cross_val_score(
+                    baseline_model,
+                    X_train_processed,
+                    y_train_encoded,
+                    cv=cv_folds,
+                    scoring="accuracy",
+                )
+
+                # Get tuned model scores
+                tuned_scores = cross_val_score(
+                    results["best_model"],
+                    X_train_processed,
+                    y_train_encoded,
+                    cv=cv_folds,
+                    scoring="accuracy",
+                )
+
+                comparison_df = pd.DataFrame(
+                    {
+                        "Model": ["Baseline", "Tuned"],
+                        "Mean CV Score": [
+                            f"{baseline_scores.mean():.4f}",
+                            f"{tuned_scores.mean():.4f}",
+                        ],
+                        "Std CV Score": [
+                            f"{baseline_scores.std():.4f}",
+                            f"{tuned_scores.std():.4f}",
+                        ],
+                        "Improvement": [
+                            "--",
+                            f"{((tuned_scores.mean() - baseline_scores.mean()) / baseline_scores.mean() * 100):+.2f}%",
+                        ],
+                    }
+                )
+
+                st.dataframe(comparison_df, use_container_width=True)
+
+                # Show top parameter combinations
+                st.subheader("🔍 Top Parameter Combinations")
+
+                # Create a DataFrame from CV results
+                cv_results_df = pd.DataFrame(results["search_results"].cv_results_)
+
+                # Show top 5 parameter combinations
+                top_results = cv_results_df.nlargest(5, "mean_test_score")[
+                    ["params", "mean_test_score", "std_test_score"]
+                ]
+
+                for idx, (_, row) in enumerate(top_results.iterrows(), 1):
+                    with st.expander(
+                        f"Rank #{idx}: Score {row['mean_test_score']:.4f} (±{row['std_test_score']:.4f})"
+                    ):
+                        st.json(row["params"])
+
+                # Feature importance comparison
+                st.subheader("🎯 Feature Importance Comparison")
+
+                # Get feature importances
+                baseline_importance = baseline_model.feature_importances_
+                tuned_importance = results["best_model"].feature_importances_
+
+                # Create comparison plot
+                fig_importance, ax = plt.subplots(figsize=(12, 6))
+
+                x_pos = np.arange(len(baseline_importance))
+                width = 0.35
+
+                ax.bar(
+                    x_pos - width / 2,
+                    baseline_importance,
+                    width,
+                    label="Baseline Model",
+                    alpha=0.7,
+                    color="skyblue",
+                )
+                ax.bar(
+                    x_pos + width / 2,
+                    tuned_importance,
+                    width,
+                    label="Tuned Model",
+                    alpha=0.7,
+                    color="lightcoral",
+                )
+
+                ax.set_xlabel("Features")
+                ax.set_ylabel("Importance")
+                ax.set_title("Feature Importance Comparison: Baseline vs Tuned Model")
+                ax.set_xticks(x_pos)
+                ax.set_xticklabels([f"F{i}" for i in range(len(baseline_importance))])
+                ax.legend()
+                ax.grid(True, alpha=0.3)
+
+                plt.tight_layout()
+                st.pyplot(fig_importance)
+
+                # Option to use tuned model for predictions
+                if st.button("✅ Use Tuned Model for Future Predictions"):
+                    st.session_state.use_tuned_model = True
+                    st.session_state.current_model = results["best_model"]
+                    st.success("🎉 Tuned model is now set as the active model!")
 
     elif page == "Batch Prediction":
         st.header("📦 Batch Prediction")
@@ -347,11 +736,22 @@ def main():
                 )
 
                 # Make predictions
-                predictions = model.predict(X_new_processed)
+                predictions_encoded = model.predict(X_new_processed)
                 prediction_proba = model.predict_proba(X_new_processed)[:, 1]
 
+                # Decode predictions back to original string labels
+                if hasattr(st.session_state, "label_encoder"):
+                    predictions_decoded = (
+                        st.session_state.label_encoder.inverse_transform(
+                            predictions_encoded
+                        )
+                    )
+                else:
+                    # Fallback if label encoder not available
+                    predictions_decoded = predictions_encoded
+
                 # Add predictions to the original new_data_df
-                new_data_df["Predicted_" + TARGET_COLUMN] = predictions
+                new_data_df["Predicted_" + TARGET_COLUMN] = predictions_decoded
                 new_data_df["Prediction_Probability"] = prediction_proba
 
                 st.subheader("Prediction Results (Head)")
