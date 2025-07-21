@@ -1,7 +1,6 @@
-# todo: drop ID column from train and test data
 # todo: refine EDA section
-# todo: refine SHAP section
-# todo: refine missing value imputation and feature engineering
+# todo: refine evaluation section
+# todo: refine text
 
 import io
 
