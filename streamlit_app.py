@@ -21,87 +21,120 @@ from sklearn.metrics import (
     confusion_matrix,
     roc_curve,
 )
+from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import LabelEncoder, OneHotEncoder
 
 # Set page config for better layout
 st.set_page_config(layout="wide", page_title="Data Science Project Demo")
 
 # Global Variables and Constants
 TARGET_COLUMN = "Personality"
+ID_COLUMN = "id"
+MAPPING_YES_NO = {
+    "Yes": 1,
+    "No": 0,
+}
+MAPPING_PERSONALITY = {
+    "Introvert": 0,
+    "Extrovert": 1,
+}
+MAPPING_PERSONALITY_INV = {
+    0: "Introvert",
+    1: "Extrovert",
+}
+PARAMS = {
+    "colsample_bytree": 1.0,
+    "learning_rate": 0.2,
+    "max_depth": 3,
+    "n_estimators": 200,
+    "reg_alpha": 0.1,
+    "reg_lambda": 0.1,
+    "subsample": 0.8,
+}
 
 
 # Data Loading
 @st.cache_data  # Cache data loading to avoid re-running on every interaction
-def load_data(train_path, test_path):
-    """Loads training and testing datasets."""
+def load_data(data_path):
+    """Loads a dataset."""
     try:
-        train_df = pd.read_csv(train_path)
-        test_df = pd.read_csv(test_path)
-        return train_df, test_df
+        df = pd.read_csv(data_path)
+        return df
     except FileNotFoundError:
-        st.error(
-            f"Error: Make sure '{train_path}' and '{test_path}' are in the same directory."
-        )
+        st.error(f"Error: Make sure '{data_path}' exists in the 'data' directory. ")
         st.stop()
     except Exception as e:
         st.error(f"An error occurred while loading data: {e}")
         st.stop()
 
 
-# Data Preprocessing
-def create_preprocessor(train_df):
+def filter_data(df, target_column=TARGET_COLUMN, id_column=ID_COLUMN):
+    """
+    Filters the dataframe to remove the target and ID columns if they exist.
+    This is useful for preprocessing steps where these columns should not be included.
+    """
+    id_col = df.get(id_column, None)
+    if target_column in df.columns:
+        df = df.drop(columns=[target_column], errors="ignore")
+    if id_column in df.columns:
+        df = df.drop(columns=[id_column], errors="ignore")
+    return df, id_col
+
+
+# Data Preprocessing - Encoding
+def map_data(df, mapping_dict):
+    """
+    Maps values in the dataframe based on a provided mapping dictionary.
+    This is useful for converting categorical string labels to numeric values.
+    """
+    for col, mapping in mapping_dict.items():
+        if col in df.columns:
+            df[col] = df[col].map(mapping)
+    return df
+
+
+# Data Preprocessing - Imputation
+def create_imputer(df, numerical_cols=None, categorical_cols=None):
     """
     Creates and fits a preprocessing pipeline based on the training data.
-    Handles numerical and categorical features, including imputation and encoding.
+    Handles numerical and categorical features imputation.
     """
-    # Identify numerical and categorical features
-    numerical_cols = train_df.select_dtypes(include=np.number).columns.tolist()
-    categorical_cols = train_df.select_dtypes(include="object").columns.tolist()
-
-    # Remove target column from features if present
-    if TARGET_COLUMN in numerical_cols:
-        numerical_cols.remove(TARGET_COLUMN)
-    if TARGET_COLUMN in categorical_cols:  # Should not happen if target is numerical
-        categorical_cols.remove(TARGET_COLUMN)
-
-    numerical_transformer = Pipeline(
+    numerical_imputer = Pipeline(
         steps=[
             ("imputer", SimpleImputer(strategy="median")),
         ]
     )
 
-    categorical_transformer = Pipeline(
+    categorical_imputer = Pipeline(
         steps=[
             ("imputer", SimpleImputer(strategy="most_frequent")),
-            ("onehot", OneHotEncoder(handle_unknown="ignore")),
         ]
     )
 
     # Create a column transformer to apply different transformations to different columns
-    preprocessor = ColumnTransformer(
+    imputer = ColumnTransformer(
         transformers=[
-            ("num", numerical_transformer, numerical_cols),
-            ("cat", categorical_transformer, categorical_cols),
+            ("num", numerical_imputer, numerical_cols),
+            ("cat", categorical_imputer, categorical_cols),
         ],
         remainder="passthrough",
     )
-    return preprocessor, numerical_cols, categorical_cols
+    return imputer
 
 
-def preprocess_data(df, preprocessor, fit_preprocessor=False):
-    """Applies the preprocessing pipeline to the dataframe."""
+def impute_data(df, preprocessor, fit_preprocessor=False):
+    """Applies the imputation pipeline to the dataframe."""
     if fit_preprocessor:
         # Fit and transform (for training data)
-        X_processed = preprocessor.fit_transform(df)
+        X_imputed = preprocessor.fit_transform(df)
     else:
         # Transform only (for test or new prediction data)
-        X_processed = preprocessor.transform(df)
-    return X_processed
+        X_imputed = preprocessor.transform(df)
+    return X_imputed
 
 
 # Model Training
-def train_model(X_train_processed, y_train, **kwargs):
+def train_model(X_train_processed, y_train, params={}):
     """Trains an XGBoost Classifier model with optional hyperparameters."""
     default_params = {
         "objective": "binary:logistic",
@@ -110,7 +143,7 @@ def train_model(X_train_processed, y_train, **kwargs):
         "random_state": 42,
     }
     # Update default params with any provided kwargs
-    default_params.update(kwargs)
+    default_params.update(params)
 
     model = xgb.XGBClassifier(**default_params)
     model.fit(X_train_processed, y_train)
@@ -136,57 +169,61 @@ def main():
         ],
     )
 
-    train_df, test_df = load_data("data/train.csv", "data/test.csv")
+    df = load_data("data/train.csv")
 
     # Ensure the target column exists in the training data
-    if TARGET_COLUMN not in train_df.columns:
+    if TARGET_COLUMN not in df.columns:
         st.error(
             f"Error: The target column '{TARGET_COLUMN}' was not found in 'train.csv'. Please adjust the TARGET_COLUMN variable in the code."
         )
         st.stop()
 
-    # Separate features and target for training
-    X_train = train_df.drop(columns=[TARGET_COLUMN])
-    y_train = train_df[TARGET_COLUMN]
+    # Split the data into features and target
+    X = filter_data(df, TARGET_COLUMN, ID_COLUMN)[0]
+    y = df[TARGET_COLUMN].map(MAPPING_PERSONALITY)
 
-    # Encode string labels to numeric for XGBoost binary classification
-    label_encoder = LabelEncoder()
-    y_train_encoded = label_encoder.fit_transform(y_train)
+    # Identify numerical and categorical features
+    numerical_cols = X.select_dtypes(include=np.number).columns.tolist()
+    categorical_cols = X.select_dtypes(include="object").columns.tolist()
 
-    # Store label encoder in session state for batch predictions
-    st.session_state.label_encoder = label_encoder
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42, stratify=y
+    )
+
+    # Apply the mapping to the categorical column
+    X_train_processed = map_data(
+        X_train,
+        {cat_col: MAPPING_YES_NO for cat_col in categorical_cols},
+    )
+    X_test_processed = map_data(
+        X_test,
+        {cat_col: MAPPING_YES_NO for cat_col in categorical_cols},
+    )
+    X_processed = map_data(
+        X,
+        {cat_col: MAPPING_YES_NO for cat_col in categorical_cols},
+    )
 
     # Create and fit the preprocessor
-    preprocessor, numerical_cols, categorical_cols = create_preprocessor(X_train)
-    X_train_processed = preprocess_data(X_train, preprocessor, fit_preprocessor=True)
+    part_imputer = create_imputer(X_train_processed, numerical_cols, categorical_cols)
+    X_train_imputed = impute_data(
+        X_train_processed, part_imputer, fit_preprocessor=True
+    )
+    X_test_imputed = impute_data(X_test_processed, part_imputer, fit_preprocessor=False)
 
-    # Get feature names after one-hot encoding
-    # This part is a bit tricky with ColumnTransformer. We need to get the names
-    # after the one-hot encoder has been fitted.
-    try:
-        ohe_feature_names = (
-            preprocessor.named_transformers_["cat"]
-            .named_steps["onehot"]
-            .get_feature_names_out(categorical_cols)
-        )
-        processed_feature_names = numerical_cols + list(ohe_feature_names)
-    except Exception:
-        # Fallback if get_feature_names_out fails (e.g., no categorical columns)
-        processed_feature_names = (
-            numerical_cols + categorical_cols
-        )  # Simple fallback, might not be accurate for OHE
+    imputer = create_imputer(X_processed, numerical_cols, categorical_cols)
+    X_imputed = impute_data(X_processed, imputer, fit_preprocessor=True)
 
     # Train the model
+    part_model = train_model(
+        X_train_imputed,
+        y_train,
+        PARAMS,
+    )
     model = train_model(
-        X_train_processed,
-        y_train_encoded,
-        colsample_bytree=1.0,
-        learning_rate=0.2,
-        max_depth=3,
-        n_estimators=200,
-        reg_alpha=0.1,
-        reg_lambda=0.1,
-        subsample=0.8,
+        X_imputed,
+        y,
+        PARAMS,
     )
 
     if page == "Project Introduction":
@@ -205,43 +242,23 @@ def main():
 
     elif page == "Data Overview":
         st.header("📊 Dataset Head")
-        st.markdown("Here's a glimpse of the raw training and testing datasets.")
+        st.markdown("Here's a glimpse of the raw datasets")
 
-        col1, col2 = st.columns(2)
-        with col1:
-            st.subheader("Training Data (`train.csv`)")
-            st.write(train_df.head())
-            st.write(f"Shape: {train_df.shape[0]} rows, {train_df.shape[1]} columns")
-            st.write("---")
-            st.subheader("Training Data Info")
-            buffer = io.StringIO()
-            train_df.info(buf=buffer)
-            st.text(buffer.getvalue())
-
-        with col2:
-            st.subheader("Test Data (`test.csv`)")
-            st.write(test_df.head())
-            st.write(f"Shape: {test_df.shape[0]} rows, {test_df.shape[1]} columns")
-            st.write("---")
-            st.subheader("Test Data Info")
-            buffer = io.StringIO()
-            test_df.info(buf=buffer)
-            st.text(buffer.getvalue())
+        st.subheader("Data (`train.csv`)")
+        st.write(df.head())
+        st.write(f"Shape: {df.shape[0]} rows, {df.shape[1]} columns")
+        st.write("---")
+        st.subheader("Data Info")
+        buffer = io.StringIO()
+        df.info(buf=buffer)
+        st.text(buffer.getvalue())
 
         st.markdown("---")
         st.subheader("Missing Values Overview")
-        st.write("Percentage of missing values in training data:")
-        missing_train = train_df.isnull().sum() / len(train_df) * 100
+        st.write("Percentage of missing values in the data:")
+        missing_train = df.isnull().sum() / len(df) * 100
         st.dataframe(
             missing_train[missing_train > 0]
-            .sort_values(ascending=False)
-            .to_frame(name="Missing %")
-        )
-
-        st.write("Percentage of missing values in test data:")
-        missing_test = test_df.isnull().sum() / len(test_df) * 100
-        st.dataframe(
-            missing_test[missing_test > 0]
             .sort_values(ascending=False)
             .to_frame(name="Missing %")
         )
@@ -249,21 +266,21 @@ def main():
     elif page == "Model Performance & Insights":
         st.header("📈 Model Performance & Feature Importance")
         st.markdown(
-            "This section provides insights into the trained model's performance and explains its predictions using SHAP values."
+            "This section provides insights into the trained model's performance and explains its predictions using SHAP values. Noted that in this section, the model is trained on 80% of the data, and the remaining 20% is used for evaluation."
         )
 
         # Make predictions on the training data for evaluation (or a held-out validation set if available)
         # For simplicity in this demo, we'll evaluate on training data, but in a real scenario,
         # you'd use a separate validation/test set.
-        y_pred_proba = model.predict_proba(X_train_processed)[:, 1]
-        y_pred = model.predict(X_train_processed)
+        y_pred_proba = part_model.predict_proba(X_test_imputed)[:, 1]
+        y_pred = part_model.predict(X_test_imputed)
 
         st.subheader("ROC AUC Curve")
         st.markdown(
             "The Receiver Operating Characteristic (ROC) curve illustrates the diagnostic ability of a binary classifier system as its discrimination threshold is varied."
         )
 
-        fpr, tpr, thresholds = roc_curve(y_train_encoded, y_pred_proba)
+        fpr, tpr, thresholds = roc_curve(y_test, y_pred_proba)
         roc_auc = auc(fpr, tpr)
 
         fig_roc, ax_roc = plt.subplots(figsize=(8, 6))
@@ -275,8 +292,8 @@ def main():
             label=f"ROC curve (area = {roc_auc:.2f})",
         )
         ax_roc.plot([0, 1], [0, 1], color="navy", lw=2, linestyle="--")
-        ax_roc.set_xlim([0.0, 1.0])
-        ax_roc.set_ylim([0.0, 1.05])
+        ax_roc.set_xlim(0.0, 1.0)
+        ax_roc.set_ylim(0.0, 1.05)
         ax_roc.set_xlabel("False Positive Rate")
         ax_roc.set_ylabel("True Positive Rate")
         ax_roc.set_title("Receiver Operating Characteristic (ROC) Curve")
@@ -284,12 +301,12 @@ def main():
         st.pyplot(fig_roc)
 
         st.subheader("Classification Report")
-        st.text(classification_report(y_train_encoded, y_pred))
+        st.text(classification_report(y_test, y_pred))
 
         st.subheader("Confusion Matrix")
         fig_cm, ax_cm = plt.subplots(figsize=(6, 5))
         sns.heatmap(
-            confusion_matrix(y_train_encoded, y_pred),
+            confusion_matrix(y_test, y_pred),
             annot=True,
             fmt="d",
             cmap="Blues",
@@ -310,24 +327,14 @@ def main():
         # Create a SHAP explainer and calculate SHAP values
         # For tree models, TreeExplainer is efficient
         explainer = shap.TreeExplainer(model)
-        shap_values = explainer.shap_values(X_train_processed)
-
-        # Ensure that processed_feature_names matches the shap_values dimensions
-        if len(processed_feature_names) != X_train_processed.shape[1]:
-            st.warning(
-                "Mismatch between feature names and processed data columns. SHAP plot might be inaccurate."
-            )
-            # Fallback for feature names if `get_feature_names_out` failed or columns were dropped
-            processed_feature_names = [
-                f"feature_{i}" for i in range(X_train_processed.shape[1])
-            ]
+        shap_values = explainer.shap_values(X_test_imputed)
 
         # SHAP Summary Plot
         fig_shap, ax_shap = plt.subplots(figsize=(10, 7))
         shap.summary_plot(
             shap_values,
-            X_train_processed,
-            feature_names=processed_feature_names,
+            X_test_imputed,
+            feature_names=numerical_cols + categorical_cols,
             show=False,
         )
         st.pyplot(fig_shap)
@@ -362,44 +369,48 @@ def main():
                 # Ensure the new data has the same columns as the training data, even if some are missing
                 # We need to align columns before preprocessing
                 # Get all columns from X_train (features used for training)
-                train_feature_cols = X_train.columns.tolist()
+                whole_feature_cols = df.columns.tolist()
 
                 # Add any missing columns to new_data_df and fill with NaN
-                for col in train_feature_cols:
+                for col in whole_feature_cols:
                     if col not in new_data_df.columns:
                         new_data_df[col] = np.nan
 
                 # Drop any extra columns in new_data_df that were not in training features
-                new_data_df = new_data_df[train_feature_cols]
+                new_data_df = new_data_df[whole_feature_cols]
 
-                X_new_processed = preprocess_data(
-                    new_data_df, preprocessor, fit_preprocessor=False
+                # Separate features and target
+                X_new, id_new = filter_data(new_data_df, TARGET_COLUMN, ID_COLUMN)
+
+                # Apply the mapping to the categorical column
+                X_new_processed = map_data(
+                    X_new,
+                    {cat_col: MAPPING_YES_NO for cat_col in categorical_cols},
+                )
+
+                # Create and fit the preprocessor
+                X_new_imputed = impute_data(
+                    X_new_processed, imputer, fit_preprocessor=False
                 )
 
                 # Make predictions
-                predictions_encoded = model.predict(X_new_processed)
-                prediction_proba = model.predict_proba(X_new_processed)[:, 1]
+                predictions_encoded = model.predict(X_new_imputed)
 
-                # Decode predictions back to original string labels
-                if hasattr(st.session_state, "label_encoder"):
-                    predictions_decoded = (
-                        st.session_state.label_encoder.inverse_transform(
-                            predictions_encoded
-                        )
-                    )
-                else:
-                    # Fallback if label encoder not available
-                    predictions_decoded = predictions_encoded
-
-                # Add predictions to the original new_data_df
-                new_data_df["Predicted_" + TARGET_COLUMN] = predictions_decoded
-                new_data_df["Prediction_Probability"] = prediction_proba
+                df_predictions = pd.DataFrame(
+                    {
+                        ID_COLUMN: id_new,
+                        TARGET_COLUMN: predictions_encoded,
+                    }
+                )
+                df_predictions[TARGET_COLUMN] = df_predictions[TARGET_COLUMN].map(
+                    MAPPING_PERSONALITY_INV
+                )
 
                 st.subheader("Prediction Results (Head)")
-                st.write(new_data_df.head())
+                st.write(df_predictions.head())
 
                 # Provide download link
-                csv_output = new_data_df.to_csv(index=False).encode("utf-8")
+                csv_output = df_predictions.to_csv(index=False).encode("utf-8")
                 st.download_button(
                     label="Download Predictions as CSV",
                     data=csv_output,
