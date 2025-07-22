@@ -1,8 +1,6 @@
-# todo: refine EDA section
 # todo: refine evaluation section
 # todo: refine text
 
-import io
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -240,27 +238,291 @@ def main():
         """)
 
     elif page == "Data Overview":
-        st.header("📊 Dataset Head")
-        st.markdown("Here's a glimpse of the raw datasets")
+        st.header("📊 Exploratory Data Analysis")
+        st.markdown(
+            "Comprehensive analysis of the dataset structure, distributions, and relationships"
+        )
 
-        st.subheader("Data (`train.csv`)")
-        st.write(df.head())
-        st.write(f"Shape: {df.shape[0]} rows, {df.shape[1]} columns")
-        st.write("---")
-        st.subheader("Data Info")
-        buffer = io.StringIO()
-        df.info(buf=buffer)
-        st.text(buffer.getvalue())
+        # 1. Dataset Head
+        st.subheader("Dataset Head")
+        st.dataframe(df.head(10))
+
+        # 2. Data Shape
+        st.subheader("Dataset Shape")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Total Rows", df.shape[0])
+        with col2:
+            st.metric("Total Columns", df.shape[1])
+        with col3:
+            st.metric("Features", df.shape[1] - 1)  # Excluding target column
 
         st.markdown("---")
-        st.subheader("Missing Values Overview")
-        st.write("Percentage of missing values in the data:")
-        missing_train = df.isnull().sum() / len(df) * 100
-        st.dataframe(
-            missing_train[missing_train > 0]
-            .sort_values(ascending=False)
-            .to_frame(name="Missing %")
-        )
+
+        # 3. Column Information with Missing Values
+        st.subheader("Column Information & Missing Values")
+
+        # Create comprehensive column info table
+        column_info = []
+        for col in df.columns:
+            missing_count = df[col].isnull().sum()
+            missing_pct = (missing_count / len(df)) * 100
+            column_info.append(
+                {
+                    "Column Name": col,
+                    "Data Type": str(df[col].dtype),
+                    "Missing Count": missing_count,
+                    "Missing %": f"{missing_pct:.2f}%",
+                    "Unique Values": df[col].nunique(),
+                }
+            )
+
+        column_info_df = pd.DataFrame(column_info)
+        st.dataframe(column_info_df, use_container_width=True)
+
+        st.markdown("---")
+
+        # 4. Descriptive Statistics
+        st.subheader("Descriptive Statistics")
+
+        # Overall descriptive statistics
+        desc_stats = df.describe().T
+        desc_stats = desc_stats.round(2)
+        st.dataframe(desc_stats, use_container_width=True)
+
+        st.markdown("---")
+
+        # 5. Variable Distribution Analysis
+        st.subheader("Variable Distribution Analysis")
+
+        # Combine all variables for selection
+        all_variables = []
+        for col in numerical_cols:
+            all_variables.append(f"{col} (Numerical)")
+        for col in categorical_cols:
+            all_variables.append(f"{col} (Categorical)")
+
+        # Add target column
+        if df[TARGET_COLUMN].dtype in [
+            "int64",
+            "float64",
+        ]:
+            all_variables.append(f"{TARGET_COLUMN} (Numerical)")
+        else:
+            all_variables.append(f"{TARGET_COLUMN} (Categorical)")
+
+        if all_variables:
+            selected_variable = st.selectbox(
+                "Select a variable to visualise its distribution:",
+                all_variables,
+                key="variable_select",
+            )
+
+            # Extract variable name and type
+            if selected_variable:
+                var_name = selected_variable.split(" (")[0]
+                var_type = (
+                    "Numerical" if "(Numerical)" in selected_variable else "Categorical"
+                )
+            else:
+                var_name = ""
+                var_type = ""
+
+            if var_type == "Numerical":
+                col1, col2 = st.columns(2)
+
+                with col1:
+                    # Histogram
+                    fig_hist, ax_hist = plt.subplots(figsize=(8, 6))
+                    sns.histplot(
+                        data=df, x=var_name, ax=ax_hist, kde=False, color="skyblue"
+                    )
+                    ax_hist.set_title(f"Distribution of {var_name}")
+                    ax_hist.set_xlabel(var_name)
+                    st.pyplot(fig_hist)
+
+                with col2:
+                    # Box plot
+                    fig_box, ax_box = plt.subplots(figsize=(8, 6))
+                    sns.boxplot(
+                        data=df,
+                        x=var_name,
+                        ax=ax_box,
+                        color="lightgreen",
+                    )
+                    ax_box.set_title(f"Box Plot of {var_name}")
+                    st.pyplot(fig_box)
+
+                # Summary statistics for selected variable
+                st.write(f"**Summary Statistics for {var_name}:**")
+                stats_df = df[var_name].describe().to_frame().T
+                st.dataframe(stats_df, use_container_width=True)
+
+            else:  # Categorical
+                col1, col2 = st.columns(2)
+
+                with col1:
+                    # Bar plot
+                    fig_bar, ax_bar = plt.subplots(figsize=(8, 6))
+                    sns.countplot(
+                        data=df,
+                        x=var_name,
+                        ax=ax_bar,
+                        order=df[var_name].value_counts().index,
+                        palette="pastel",
+                    )
+                    ax_bar.set_title(f"Distribution of {var_name}")
+                    ax_bar.set_xlabel(var_name)
+                    ax_bar.set_ylabel("Count")
+                    ax_bar.tick_params(axis="x", rotation=45)
+                    plt.tight_layout()
+                    st.pyplot(fig_bar)
+
+                with col2:
+                    # Value counts table
+                    st.write(f"**Value Counts for {var_name}:**")
+                    counts_df = df[var_name].value_counts().reset_index()
+                    st.dataframe(counts_df, use_container_width=True)
+        else:
+            st.info("No variables available for visualisation.")
+
+        st.markdown("---")
+
+        # 6. Correlation Heatmap
+        st.subheader("Correlation Analysis")
+
+        if len(numerical_cols) > 1:
+            # Include target if it's numerical
+            corr_cols = numerical_cols.copy()
+            if TARGET_COLUMN in df.columns and df[TARGET_COLUMN].dtype in [
+                "int64",
+                "float64",
+            ]:
+                corr_cols.append(TARGET_COLUMN)
+
+            correlation_matrix = df[corr_cols].corr()
+
+            fig_corr, ax_corr = plt.subplots(figsize=(12, 10))
+            mask = np.triu(np.ones_like(correlation_matrix, dtype=bool))
+            sns.heatmap(
+                correlation_matrix,
+                mask=mask,
+                annot=True,
+                cmap="coolwarm",
+                center=0,
+                square=True,
+                ax=ax_corr,
+                fmt=".2f",
+            )
+            ax_corr.set_title("Correlation Heatmap of Numerical Variables")
+            plt.tight_layout()
+            st.pyplot(fig_corr)
+
+            # Show strongest correlations
+            st.write("**Strongest Correlations (excluding self-correlations):**")
+            corr_pairs = []
+            for i in range(len(correlation_matrix.columns)):
+                for j in range(i + 1, len(correlation_matrix.columns)):
+                    corr_pairs.append(
+                        {
+                            "Variable 1": correlation_matrix.columns[i],
+                            "Variable 2": correlation_matrix.columns[j],
+                            "Correlation": correlation_matrix.iloc[i, j],
+                        }
+                    )
+
+            corr_pairs_df = pd.DataFrame(corr_pairs)
+            corr_pairs_df = corr_pairs_df.reindex(
+                corr_pairs_df["Correlation"].abs().sort_values(ascending=False).index
+            )
+            st.dataframe(corr_pairs_df.head(10), use_container_width=True)
+        else:
+            st.info("Need at least 2 numerical variables to show correlation analysis.")
+
+        st.markdown("---")
+
+        # 7. Target Variable Analysis
+        st.subheader("Target Variable Distribution")
+
+        # Combine all variables for selection
+        all_interact_variables = []
+        for col in numerical_cols:
+            all_interact_variables.append(f"{col} (Numerical)")
+        for col in categorical_cols:
+            all_interact_variables.append(f"{col} (Categorical)")
+
+        if all_interact_variables:
+            selected_interact_variable = st.selectbox(
+                "Select a variable to visualise its distribution against target variable:",
+                all_interact_variables,
+                key="variable_interact_select",
+            )
+
+            # Extract variable name and type
+            if selected_interact_variable:
+                var_interact_name = selected_interact_variable.split(" (")[0]
+                var_interact_type = (
+                    "Numerical"
+                    if "(Numerical)" in selected_interact_variable
+                    else "Categorical"
+                )
+            else:
+                var_interact_name = ""
+                var_interact_type = ""
+
+            if var_interact_type == "Numerical":
+                # Histogram
+                fig_hist, ax_hist = plt.subplots(figsize=(8, 6))
+                sns.histplot(
+                    data=df,
+                    x=var_interact_name,
+                    ax=ax_hist,
+                    color="skyblue",
+                    hue=TARGET_COLUMN,
+                    multiple="dodge",
+                )
+                ax_hist.set_title(
+                    f"Distribution of {var_interact_name} by {TARGET_COLUMN}"
+                )
+                ax_hist.set_xlabel(var_interact_name)
+                ax_hist.set_ylabel("Frequency")
+                st.pyplot(fig_hist)
+
+            else:  # Categorical
+                # Cross-tabulation
+                crosstab = pd.crosstab(
+                    df[var_interact_name], df[TARGET_COLUMN], margins=True
+                )
+                st.write(f"Cross-tabulation: {var_interact_name} vs {TARGET_COLUMN}")
+                st.dataframe(crosstab, use_container_width=True)
+
+                # Stacked bar chart
+                fig_stack, ax_stack = plt.subplots(figsize=(10, 6))
+                crosstab_pct = (
+                    pd.crosstab(
+                        df[var_interact_name],
+                        df[TARGET_COLUMN],
+                        normalize="index",
+                    )
+                    * 100
+                )
+                crosstab_pct.plot(
+                    kind="bar",
+                    stacked=True,
+                    ax=ax_stack,
+                    color=["lightcoral", "lightblue"],
+                )
+                ax_stack.set_title(
+                    f"{var_interact_name} Distribution by {TARGET_COLUMN} (%)"
+                )
+                ax_stack.set_xlabel(var_interact_name)
+                ax_stack.set_ylabel("Percentage")
+                ax_stack.legend(title=TARGET_COLUMN)
+                ax_stack.tick_params(axis="x", rotation=0)
+                plt.tight_layout()
+                st.pyplot(fig_stack)
+        else:
+            st.info("No variables available for visualisation.")
 
     elif page == "Model Performance & Insights":
         st.header("📈 Model Performance & Feature Importance")
