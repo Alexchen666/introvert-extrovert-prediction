@@ -1,4 +1,3 @@
-# todo: refine evaluation section
 # todo: refine text
 
 
@@ -16,6 +15,9 @@ from sklearn.metrics import (
     auc,
     classification_report,
     confusion_matrix,
+    f1_score,
+    precision_score,
+    recall_score,
     roc_curve,
 )
 from sklearn.model_selection import train_test_split
@@ -536,13 +538,39 @@ def main():
         y_pred_proba = part_model.predict_proba(X_test_imputed)[:, 1]
         y_pred = part_model.predict(X_test_imputed)
 
+        st.subheader("Classification Report")
+        # Convert classification report to DataFrame for better display
+        report_dict = classification_report(y_test, y_pred, output_dict=True)
+
+        # Create a DataFrame from the classification report
+        report_df = pd.DataFrame(report_dict).transpose()
+
+        # Format the DataFrame for better display
+        report_df = report_df.round(3)
+
+        # Display as a table
+        st.dataframe(report_df, use_container_width=True)
+
+        # Calculate ROC AUC
+        fpr, tpr, thresholds = roc_curve(y_test, y_pred_proba)
+        roc_auc = auc(fpr, tpr)
+
+        col1, col2, col3, col4, col5 = st.columns(5)
+        with col1:
+            st.metric("Accuracy", round(float(accuracy_score(y_test, y_pred)), 2))
+        with col2:
+            st.metric("Precision", round(float(precision_score(y_test, y_pred)), 2))
+        with col3:
+            st.metric("Recall", round(float(recall_score(y_test, y_pred)), 2))
+        with col4:
+            st.metric("F1 Score", round(float(f1_score(y_test, y_pred)), 2))
+        with col5:
+            st.metric("ROC AUC", round(float(roc_auc), 2))
+
         st.subheader("ROC AUC Curve")
         st.markdown(
             "The Receiver Operating Characteristic (ROC) curve illustrates the diagnostic ability of a binary classifier system as its discrimination threshold is varied."
         )
-
-        fpr, tpr, thresholds = roc_curve(y_test, y_pred_proba)
-        roc_auc = auc(fpr, tpr)
 
         fig_roc, ax_roc = plt.subplots(figsize=(8, 6))
         ax_roc.plot(
@@ -560,9 +588,6 @@ def main():
         ax_roc.set_title("Receiver Operating Characteristic (ROC) Curve")
         ax_roc.legend(loc="lower right")
         st.pyplot(fig_roc)
-
-        st.subheader("Classification Report")
-        st.text(classification_report(y_test, y_pred))
 
         st.subheader("Confusion Matrix")
         fig_cm, ax_cm = plt.subplots(figsize=(6, 5))
@@ -599,16 +624,6 @@ def main():
             show=False,
         )
         st.pyplot(fig_shap)
-        st.markdown("---")
-        st.markdown("""
-            **Interpretation of SHAP Summary Plot:**
-            - **X-axis**: SHAP value (impact on model output).
-            - **Y-axis**: Features, ordered by importance.
-            - **Color**: Feature value (red = high, blue = low).
-            - Each dot represents an instance from the dataset.
-            - Dots stacked vertically indicate density.
-            - A dot to the right of zero means that feature value increases the prediction, and to the left decreases it.
-        """)
 
     elif page == "Batch Prediction":
         st.header("📦 Batch Prediction")
