@@ -1,3 +1,5 @@
+from typing import Optional, Tuple
+
 import numpy as np
 import pandas as pd
 import xgboost as xgb
@@ -22,10 +24,21 @@ MAPPING_PERSONALITY = {
 }
 
 
-def filter_data(df, target_column=TARGET_COLUMN, id_column=ID_COLUMN):
+def filter_data(
+    df: pd.DataFrame, target_column: str = TARGET_COLUMN, id_column: str = ID_COLUMN
+) -> Tuple[pd.DataFrame, Optional[pd.Series]]:
     """
     Filters the dataframe to remove the target and ID columns if they exist.
-    This is useful for preprocessing steps where these columns should not be included.
+
+    Args:
+        df (pd.DataFrame): Input dataframe to filter.
+        target_column (str, optional): Name of the target column to remove. Defaults to TARGET_COLUMN.
+        id_column (str, optional): Name of the ID column to remove. Defaults to ID_COLUMN.
+
+    Returns:
+        Tuple[pd.DataFrame, Optional[pd.Series]]: A tuple containing:
+            - df: Filtered dataframe with target and ID columns removed
+            - id_col: ID column data if it existed, None otherwise
     """
     id_col = df.get(id_column, None)
     if target_column in df.columns:
@@ -36,10 +49,17 @@ def filter_data(df, target_column=TARGET_COLUMN, id_column=ID_COLUMN):
 
 
 # Data Preprocessing - Encoding
-def map_data(df, mapping_dict):
+def map_data(df: pd.DataFrame, mapping_dict: dict) -> pd.DataFrame:
     """
     Maps values in the dataframe based on a provided mapping dictionary.
-    This is useful for converting categorical string labels to numeric values.
+
+    Args:
+        df (pd.DataFrame): Input dataframe to apply mappings to.
+        mapping_dict (Dict[str, Dict[str, int]]): Dictionary where keys are column names
+            and values are dictionaries mapping old values to new values.
+
+    Returns:
+        df (pd.DataFrame): Dataframe with mapped values applied to specified columns.
     """
     for col, mapping in mapping_dict.items():
         if col in df.columns:
@@ -83,19 +103,22 @@ imputer = ColumnTransformer(
 
 
 # Hyperparameter Tuning Functions
-def perform_hyperparameter_tuning(X_processed, y_train, param_grid, cv_folds=5):
+def perform_hyperparameter_tuning(
+    X_processed: pd.DataFrame, y_train: pd.Series, param_grid: dict, cv_folds: int = 5
+) -> tuple:
     """
-    Performs hyperparameter tuning using GridSearchCV or RandomizedSearchCV.
+    Performs hyperparameter tuning using GridSearchCV.
 
     Args:
-        X_processed: Preprocessed training features
-        y_train: Training target
-        param_grid: Dictionary of hyperparameters to tune
-        cv_folds: Number of cross-validation folds
+        X_processed (pd.DataFrame): Preprocessed training features.
+        y_train (pd.Series): Training target values.
+        param_grid (dict): Dictionary of hyperparameters to tune.
+        cv_folds (int, optional): Number of cross-validation folds. Defaults to 5.
 
     Returns:
-        best_model: The best model found
-        search_results: The search object with all results
+        tuple: A tuple containing:
+            - best_model: The best model found during grid search
+            - search_results: The GridSearchCV object with all results
     """
     base_model = xgb.XGBClassifier(
         objective="binary:logistic",
@@ -123,8 +146,15 @@ def perform_hyperparameter_tuning(X_processed, y_train, param_grid, cv_folds=5):
     return search.best_estimator_, search
 
 
-def get_hyperparameter_grid():
-    """Returns a comprehensive hyperparameter grid for XGBoost."""
+def get_hyperparameter_grid() -> dict:
+    """
+    Returns a comprehensive hyperparameter grid for XGBoost.
+
+    Returns:
+        dict: Dictionary containing hyperparameter names as keys and lists of values to try as values.
+            Includes parameters for n_estimators, max_depth, learning_rate, subsample,
+            colsample_bytree, reg_alpha, and reg_lambda.
+    """
     return {
         "classifier__n_estimators": [50, 100, 200, 300],
         "classifier__max_depth": [3, 4, 5, 6, 7],
